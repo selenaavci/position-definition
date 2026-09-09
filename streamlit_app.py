@@ -1,18 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-streamlit_app.py — Görev Tanımı Benzerlik Arayüzü · STREAMLIT CLOUD (mock) sürümü
-
-Bu sürüm herkese açık Streamlit Cloud'da demo için tasarlandı; kurum içi
-sunucudaki tam sürümden farkları:
-  • Veri: yalnızca MOCK (SQL / PositionDefinition yok).
-  • LLM YOK: kavram etiketleme kural tabanlı — hiçbir ağ çağrısı yapılmaz.
-  • Kalıcı backend yok: geri bildirimler oturum (session) belleğinde tutulur ve
-    CSV olarak indirilebilir. (Streamlit Cloud'da disk kalıcı değildir.)
-  • Ontoloji düzenlemeleri oturumda geçerli olur ve JSON olarak indirilebilir.
-
-Tek dosyadır (core/db bağımlılığı yoktur) — Streamlit Cloud'a doğrudan deploy edilir.
-Çalıştırma:  streamlit run streamlit_app.py
-"""
 from __future__ import annotations
 
 import io
@@ -24,7 +9,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Görev Tanımı Benzerlik (Demo)",
+st.set_page_config(page_title="Görev Tanımı Benzerlik",
                    page_icon="🕸️", layout="wide")
 
 ESIK_VARSAYILAN = 0.30
@@ -241,9 +226,9 @@ def _csv(rows: list[dict]) -> bytes:
 # ============================================================================
 # BAŞLIK
 # ============================================================================
-st.title("🕸️ Görev Tanımı Benzerlik Arayüzü — Demo")
-st.caption("Streamlit Cloud demo · Veri: **mock** · Kavram etiketleme: **kural tabanlı (LLM yok)** · "
-           "Geri bildirim: oturum belleği (kalıcı değil, CSV indirilebilir)")
+st.title("Görev Tanımlarında Benzerlik Tespiti")
+st.caption("DEMO · Veri: Örnek Veri· Kavram etiketleme: **Kural Tabanlı - AI Yok** · "
+           "Geri bildirim: Oturum Belleği (kalıcı değil)")
 
 sekme1, sekme2, sekme3 = st.tabs([
     "1️⃣ Karşılaştırma", "2️⃣ Geri Bildirim", "3️⃣ Kavram Eşleştirme"])
