@@ -295,7 +295,7 @@ with sekme1:
 # ============================================================================
 with sekme2:
     st.subheader("Geri bildirim")
-    kullanici = st.text_input("Kullanıcı / birim (opsiyonel)", key="fb_kullanici")
+    kullanici = st.text_input("Kurum Kullanıcı Adı", key="fb_kullanici")
     alt1, alt2 = st.tabs(["🔁 Benzerlik çiftleri (%30+)", "🔗 Kavram eşleştirmeleri"])
 
     # (a) benzerlik çiftleri
