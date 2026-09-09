@@ -1,3 +1,18 @@
+# -*- coding: utf-8 -*-
+"""
+streamlit_app.py — Görev Tanımı Benzerlik Arayüzü · STREAMLIT CLOUD (mock) sürümü
+
+Bu sürüm herkese açık Streamlit Cloud'da demo için tasarlandı; kurum içi
+sunucudaki tam sürümden farkları:
+  • Veri: yalnızca MOCK (SQL / PositionDefinition yok).
+  • LLM YOK: kavram etiketleme kural tabanlı — hiçbir ağ çağrısı yapılmaz.
+  • Kalıcı backend yok: geri bildirimler oturum (session) belleğinde tutulur ve
+    CSV olarak indirilebilir. (Streamlit Cloud'da disk kalıcı değildir.)
+  • Ontoloji düzenlemeleri oturumda geçerli olur ve JSON olarak indirilebilir.
+
+Tek dosyadır (core/db bağımlılığı yoktur) — Streamlit Cloud'a doğrudan deploy edilir.
+Çalıştırma:  streamlit run streamlit_app.py
+"""
 from __future__ import annotations
 
 import io
@@ -186,9 +201,29 @@ st.session_state.setdefault("fb_mapping", [])    # kavram eşleştirme geri bild
 st.session_state.setdefault("fb_concept", [])    # kavram önerileri
 
 
+def _kirmizi_hucre(v):
+    """matplotlib'siz kırmızı gradyan (0-100)."""
+    try:
+        a = max(0.0, min(1.0, float(v) / 100))
+    except (TypeError, ValueError):
+        return ""
+    return f"background-color: rgba(220,38,38,{a:.2f}); color: {'white' if a > 0.5 else 'black'}"
+
 def _isi_haritasi_stil(S: pd.DataFrame):
-    return (S * 100).round(0).astype(int).style.background_gradient(
-        cmap="OrRd", vmin=0, vmax=100).format("{}")
+    return (S * 100).round(0).astype(int).style.map(_kirmizi_hucre).format("{}")
+
+def _mavi_matris_stil(M: pd.DataFrame):
+    """matplotlib'siz mavi gradyan (ağırlık matrisi)."""
+    mx = max(1, int(M.values.max())) if M.size else 1
+    def f(v):
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return ""
+        if x <= 0:
+            return ""
+        return f"background-color: rgba(74,144,217,{0.15 + 0.85 * min(x, mx) / mx:.2f})"
+    return M.style.map(f).format("{}")
 
 def _eslestirme_tablo(detay, concepts) -> pd.DataFrame:
     return pd.DataFrame([{
@@ -269,8 +304,7 @@ with sekme1:
                 "Eşik üstü": "✅" if f["esik_ustu"] else "",
                 "Ortak kavramlar": ", ".join(f["ortak_kavramlar"])} for f in A["flagged"]]),
                 width="stretch", hide_index=True)
-            st.dataframe(A["kavram_matrisi"].style.background_gradient(cmap="Blues"),
-                         width="stretch")
+            st.dataframe(_mavi_matris_stil(A["kavram_matrisi"]), width="stretch")
 
 # ============================================================================
 # EKRAN 2 — GERİ BİLDİRİM
