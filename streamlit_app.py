@@ -1,16 +1,33 @@
+# -*- coding: utf-8 -*-
+"""
+streamlit_app.py — Görev Tanımı Benzerlik Arayüzü · STREAMLIT CLOUD (mock) sürümü
+
+Bu sürüm herkese açık Streamlit Cloud'da demo için tasarlandı; kurum içi
+sunucudaki tam sürümden farkları:
+  • Veri: yalnızca MOCK (SQL / PositionDefinition yok).
+  • LLM YOK: kavram etiketleme kural tabanlı — hiçbir ağ çağrısı yapılmaz.
+  • Kalıcı backend yok: geri bildirimler oturum (session) belleğinde tutulur ve
+    CSV olarak indirilebilir. (Streamlit Cloud'da disk kalıcı değildir.)
+  • Ontoloji düzenlemeleri oturumda geçerli olur ve JSON olarak indirilebilir.
+
+Tek dosyadır (core/db bağımlılığı yoktur) — Streamlit Cloud'a doğrudan deploy edilir.
+Çalıştırma:  streamlit run streamlit_app.py
+"""
 from __future__ import annotations
 
 import io
 import json
 import re
+import ssl
 from itertools import combinations
 from datetime import datetime
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Görev Tanımı Benzerlik",
-                   page_icon="🕸️", layout="wide")
+st.set_page_config(page_title="Görev Tanımı Benzerlik (Demo)",
+                   layout="wide")
 
 ESIK_VARSAYILAN = 0.30
 
@@ -66,6 +83,11 @@ def mock_df() -> pd.DataFrame:
          "Bireysel müşteri portföyünü oluşturur ve yönetir. Satış hedeflerini ve ürün "
          "penetrasyonunu artırır. Mevzuat ve banka prosedürlerine uyar. SPK Düzey 1 lisansı ile "
          "sermaye piyasası işlemleri yürütür. Şube ve GM birimleriyle koordinasyon sağlar."),
+        ("P-BIREY-KID", "Kıdemli Bireysel Portföy Yöneticisi",
+         "Bireysel müşteri portföyünü oluşturur, yönetir ve büyütür. Satış hedeflerini ve ürün "
+         "penetrasyonunu artırır. Junior portföy yöneticilerine mentorluk yapar. Mevzuat ve banka "
+         "prosedürlerine uyar. SPK Düzey 1 lisansı ile sermaye piyasası işlemleri yürütür. Şube ve "
+         "GM birimleriyle koordinasyon sağlar."),
         ("P-TICPF", "Ticari Portföy Yöneticisi",
          "Ticari müşteri portföyünü yönetir ve büyütür. Satış ve gelir hedeflerine ulaşır. "
          "Kredi ve dış ticaret ürünlerini (akreditif, teminat) sunar. Mevzuata uyar ve şube "
@@ -116,6 +138,27 @@ def kavram_etiketle(cumle: str, kurallar: dict) -> list[str]:
     return [kod for kod, anahtarlar in kurallar.items()
             if any(tr_kucuk(a) in t for a in anahtarlar)]
 
+# --- Aynı pozisyonun kıdem/seviye versiyonları -------------------------------
+KIDEM_ISARETLERI = [
+    "kidemli", "kıdemli", "basuzman", "başuzman", "bas", "baş", "yardimcisi", "yardımcısı",
+    "yardimci", "yardımcı", "uzmani", "uzmanı", "uzman", "yonetmeni", "yönetmeni",
+    "yonetmen", "yönetmen", "muduru", "müdürü", "mudur", "müdür", "yoneticisi", "yöneticisi",
+    "yonetici", "yönetici", "direktoru", "direktörü", "direktor", "direktör", "yetkilisi",
+    "yetkili", "memuru", "memur", "sefi", "şefi", "sef", "şef", "koordinatoru", "koordinatörü",
+    "koordinator", "koordinatör", "asistani", "asistanı", "asistan", "stajyer",
+    "genel", "grup", "bolge", "bölge", "seviye", "kademe", "junior", "senior", "lead", "jr", "sr",
+    "i", "ii", "iii", "iv", "v", "1", "2", "3", "4", "5",
+]
+_KIDEM_SET = set(tr_kucuk(x) for x in KIDEM_ISARETLERI)
+
+def _kidem_taban(ad: str) -> str:
+    t = re.sub(r"[^0-9a-zcgiosuçğıöşü ]", " ", tr_kucuk(ad))
+    return " ".join(w for w in t.split() if w not in _KIDEM_SET).strip()
+
+def ayni_kidem_ailesi(adA: str, adB: str) -> bool:
+    a, b = _kidem_taban(adA), _kidem_taban(adB)
+    return bool(a) and a == b
+
 # ============================================================================
 # BENZERLİK (ağırlıklı Jaccard) — seçilen görevler üzerinde
 # ============================================================================
@@ -157,6 +200,7 @@ def analiz_et(df_secili: pd.DataFrame, concepts: dict, kurallar: dict,
         shared = sorted(set(WEIGHTS[a]) & set(WEIGHTS[b]),
                         key=lambda k: -min(WEIGHTS[a][k], WEIGHTS[b][k]))
         flagged.append(dict(benzerlik=round(s, 4), yuzde=round(s * 100), esik_ustu=s > esik,
+                            ayni_kidem=ayni_kidem_ailesi(JOBS[a][0], JOBS[b][0]),
                             gorevA=a, adA=JOBS[a][0], gorevB=b, adB=JOBS[b][0],
                             ortak_kodlar=shared, ortak_kavramlar=[concepts[k] for k in shared
                                                                   if k in concepts]))
@@ -181,9 +225,62 @@ if "concepts" not in st.session_state:
     st.session_state.kurallar = {k: list(v) for k, v in KURALLAR_VARSAYILAN.items()}
 st.session_state.setdefault("analiz", None)
 st.session_state.setdefault("kavram_fb", None)
+st.session_state.setdefault("rk", None)          # rol-kavram görünümü sonucu
 st.session_state.setdefault("fb_pairs", [])     # çift geri bildirimleri
 st.session_state.setdefault("fb_mapping", [])    # kavram eşleştirme geri bildirimleri
 st.session_state.setdefault("fb_concept", [])    # kavram önerileri
+
+# ---- yapay zeka yorumu (opsiyonel LLM: Streamlit secrets [llm]) ----
+SISTEM_KAR = (
+  "Sen bir banka İK / organizasyon uzmanısın. Sana görev tanımları arasındaki benzerlik "
+  "bulguları verilir: (1) İNCELENECEK çiftler (farklı pozisyon, olası çakışma), (2) AYNI "
+  "POZİSYONUN KIDEM/SEVİYE versiyonları (yüksek benzerlik beklenir). Kısa, Türkçe, madde madde "
+  "yorum yaz: hangileri gerçekten çakışıyor olabilir, hangileri kıdem kaynaklı normaldir, ne "
+  "önerirsin. Yalnızca verilen bulgulara dayan."
+)
+SISTEM_RK = (
+  "Sen bir banka İK / organizasyon uzmanısın. Sana roller ve eşleştikleri kavramlar verilir. "
+  "Kısa, Türkçe bir yorum yaz: rollerin kavramsal odakları, örtüşmeler/boşluklar, öneriler."
+)
+
+def _ai_yorum(sistem: str, kullanici: str) -> tuple[bool, str]:
+    """Streamlit secrets'ta [llm] tanımlıysa yorum üretir; değilse bilgilendirir."""
+    try:
+        conf = dict(st.secrets.get("llm", {}))
+    except Exception:
+        conf = {}
+    base = str(conf.get("base_url", "")).strip()
+    model = str(conf.get("model", "")).strip()
+    key = str(conf.get("api_key", "")).strip()
+    if not base or not model:
+        return False, ("Bu demo sürümünde yapay zeka yorumu için LLM bağlı değil. "
+                       "Streamlit secrets'a [llm] base_url ve model ekleyerek etkinleştirebilirsin; "
+                       "kurum içi sürümde otomatik çalışır.")
+    try:
+        payload = {"model": model, "temperature": 0.2,
+                   "messages": [{"role": "system", "content": sistem},
+                                {"role": "user", "content": kullanici}]}
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        req = Request(base.rstrip("/") + "/chat/completions",
+                      data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        with urlopen(req, timeout=60, context=ssl.create_default_context()) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        return True, d["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return False, f"LLM'e ulaşılamadı ({type(e).__name__})."
+
+def _yapay_zeka_kutusu(state_key: str):
+    veri = st.session_state.get(state_key)
+    if veri:
+        (st.info if veri.get("ok") else st.warning)(
+            ("" + veri["metin"]) if veri.get("ok") else veri["metin"])
+
+def _cift_tablo(liste) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "Benzerlik %": f["yuzde"], "Görev A": f["adA"], "Görev B": f["adB"],
+        "Ortak kavramlar": ", ".join(f["ortak_kavramlar"])} for f in liste])
 
 
 def _kirmizi_hucre(v):
@@ -226,12 +323,16 @@ def _csv(rows: list[dict]) -> bytes:
 # ============================================================================
 # BAŞLIK
 # ============================================================================
-st.title("Görev Tanımlarında Benzerlik Tespiti")
-st.caption("DEMO · Veri: Örnek Veri· Kavram etiketleme: **Kural Tabanlı - AI Yok** · "
-           "Geri bildirim: Oturum Belleği (kalıcı değil)")
+st.title("Görev Tanımı Benzerlik Arayüzü — Demo")
+st.caption("Streamlit Cloud demo · Veri: **mock** · Kavram etiketleme: **kural tabanlı (LLM yok)** · "
+           "Geri bildirim: oturum belleği (kalıcı değil, CSV indirilebilir)")
 
-sekme1, sekme2, sekme3 = st.tabs([
-    "1️⃣ Karşılaştırma", "2️⃣ Geri Bildirim", "3️⃣ Kavram Eşleştirme"])
+# Görüntü sırası: Karşılaştırma · Rol–Kavram · Kavram Ontolojisi · Geri Bildirim.
+# (Kod blokları sekme1=Karşılaştırma, sekme2=Geri Bildirim, sekme3=Rol–Kavram,
+#  sekme4=Ontoloji; değişkenleri bloklarla eşleştirmek için 1,3,4,2 sırayla açıyoruz.)
+sekme1, sekme3, sekme4, sekme2 = st.tabs([
+    "1 Karşılaştırma", "2 Rol–Kavram Görünümü",
+    "3 Kavram Ontolojisi (JSON)", "4 Geri Bildirim"])
 
 df = mock_df()
 etiketler = {f"{r['PositionId']} · {kisa_ad(r)}": str(r["PositionId"]) for _, r in df.iterrows()}
@@ -247,17 +348,18 @@ with sekme1:
                                     list(etiketler.keys()), help="En az 2 görev seç.")
     esik = st.slider("Benzerlik eşiği (%)", 5, 100, int(ESIK_VARSAYILAN * 100), 5) / 100.0
 
-    if st.button("🔍 Karşılaştır", type="primary", disabled=len(secili_gorunen) < 2):
+    if st.button("Karşılaştır", type="primary", disabled=len(secili_gorunen) < 2):
         secili_ids = [etiketler[g] for g in secili_gorunen]
         alt = df[df["PositionId"].astype(str).isin(secili_ids)]
         st.session_state.analiz = analiz_et(alt, st.session_state.concepts,
                                             st.session_state.kurallar, esik=esik)
+        st.session_state.pop("ai_kar", None)
         st.success("Analiz tamamlandı.")
 
     A = st.session_state.analiz
     if A:
         ids = list(A["JOBS"])
-        st.markdown("### 🔗 Görev bazlı kavram eşleştirmeleri")
+        st.markdown("### Görev bazlı kavram eşleştirmeleri")
         for jid in ids:
             with st.expander(f"{jid} · {A['JOBS'][jid][0]}", expanded=False):
                 st.dataframe(_eslestirme_tablo(A["cumle_detay"][jid], A["concepts"]),
@@ -269,23 +371,43 @@ with sekme1:
                                      if c in A["concepts"])
                     st.caption(f"Kavram ağırlıkları (cümle sayısı): {ozet}")
 
-        st.markdown("### 📊 Benzerlik matrisi (ağırlıklı Jaccard, %)")
+        st.markdown("### Benzerlik matrisi (ağırlıklı Jaccard, %)")
         st.dataframe(_isi_haritasi_stil(A["S"]), width="stretch")
 
-        st.markdown(f"#### %{int(A['esik']*100)} eşiğini aşan çiftler")
-        ustu = [f for f in A["flagged"] if f["esik_ustu"]]
-        if ustu:
-            st.dataframe(pd.DataFrame([{
-                "Benzerlik %": f["yuzde"], "Görev A": f["adA"], "Görev B": f["adB"],
-                "Ortak kavramlar": ", ".join(f["ortak_kavramlar"])} for f in ustu]),
-                width="stretch", hide_index=True)
+        esik_ustu = [f for f in A["flagged"] if f["esik_ustu"]]
+        incele = [f for f in esik_ustu if not f.get("ayni_kidem")]
+        kidem = [f for f in esik_ustu if f.get("ayni_kidem")]
+
+        st.markdown(f"#### İncelenecek çiftler (farklı pozisyon, %{int(A['esik']*100)}+)")
+        if incele:
+            st.dataframe(_cift_tablo(incele), width="stretch", hide_index=True)
         else:
-            st.info("Seçili görevler arasında eşiği aşan çift yok.")
+            st.info("Farklı pozisyonlar arasında eşiği aşan çift yok.")
+
+        st.markdown("#### Aynı pozisyon — kıdem/seviye versiyonları (beklenen)")
+        if kidem:
+            st.caption("Aynı işin farklı kıdem kademeleri; yüksek benzerlik beklenir, çakışma değildir.")
+            st.dataframe(_cift_tablo(kidem), width="stretch", hide_index=True)
+        else:
+            st.caption("Aynı pozisyonun kıdem/seviye versiyonu tespit edilmedi.")
+
+        st.divider()
+        if st.button("Yapay zeka yorumu al", key="btn_ai_kar"):
+            baglam = ["İNCELENECEK ÇİFTLER (farklı pozisyon):"]
+            baglam += [f"- %{f['yuzde']} {f['adA']} <-> {f['adB']} | ortak: {', '.join(f['ortak_kavramlar'])}"
+                       for f in incele] or ["- yok"]
+            baglam += ["", "AYNI POZİSYONUN KIDEM/SEVİYE VERSİYONLARI (beklenen):"]
+            baglam += [f"- %{f['yuzde']} {f['adA']} <-> {f['adB']}" for f in kidem] or ["- yok"]
+            with st.spinner("Yapay zeka yorumu üretiliyor..."):
+                ok, metin = _ai_yorum(SISTEM_KAR, "\n".join(baglam))
+            st.session_state.ai_kar = {"ok": ok, "metin": metin}
+        _yapay_zeka_kutusu("ai_kar")
 
         with st.expander("Tüm çift skorları + Görev × Kavram matrisi"):
             st.dataframe(pd.DataFrame([{
                 "Benzerlik %": f["yuzde"], "Görev A": f["adA"], "Görev B": f["adB"],
-                "Eşik üstü": "✅" if f["esik_ustu"] else "",
+                "Eşik üstü": "Evet" if f["esik_ustu"] else "",
+                "Kıdem/seviye": "Evet" if f.get("ayni_kidem") else "",
                 "Ortak kavramlar": ", ".join(f["ortak_kavramlar"])} for f in A["flagged"]]),
                 width="stretch", hide_index=True)
             st.dataframe(_mavi_matris_stil(A["kavram_matrisi"]), width="stretch")
@@ -295,17 +417,17 @@ with sekme1:
 # ============================================================================
 with sekme2:
     st.subheader("Geri bildirim")
-    kullanici = st.text_input("Kurum Kullanıcı Adı", key="fb_kullanici")
-    alt1, alt2 = st.tabs(["🔁 Benzerlik çiftleri (%30+)", "🔗 Kavram eşleştirmeleri"])
+    kullanici = st.text_input("Kullanıcı / birim (opsiyonel)", key="fb_kullanici")
+    alt1, alt2 = st.tabs(["Benzerlik çiftleri (%30+)", "Kavram eşleştirmeleri"])
 
     # (a) benzerlik çiftleri
     with alt1:
         A = st.session_state.analiz
-        ustu = [f for f in A["flagged"] if f["esik_ustu"]] if A else []
+        ustu = [f for f in A["flagged"] if f["esik_ustu"] and not f.get("ayni_kidem")] if A else []
         if not A:
-            st.info("Önce **1️⃣ Karşılaştırma** ekranında bir analiz çalıştır.")
+            st.info("Önce **1 Karşılaştırma** ekranında bir analiz çalıştır.")
         elif not ustu:
-            st.info("Son analizde %eşiğini aşan çift yok.")
+            st.info("Son analizde incelenecek (farklı pozisyon) çift yok.")
         else:
             taban = pd.DataFrame([{
                 "gorevA": f["gorevA"], "adA": f["adA"], "gorevB": f["gorevB"], "adB": f["adB"],
@@ -320,7 +442,7 @@ with sekme2:
                     "Benzerlik %": st.column_config.NumberColumn(disabled=True),
                     "Görev A": st.column_config.TextColumn(disabled=True),
                     "Görev B": st.column_config.TextColumn(disabled=True)})
-            if st.button("💾 Çift geri bildirimlerini kaydet", type="primary"):
+            if st.button("Çift geri bildirimlerini kaydet", type="primary"):
                 n = 0
                 for i, row in duzen.iterrows():
                     if row["Karar"] in ("Doğru", "Yanlış"):
@@ -335,7 +457,7 @@ with sekme2:
         st.markdown("##### Toplanan çift geri bildirimleri (oturum)")
         if st.session_state.fb_pairs:
             st.dataframe(pd.DataFrame(st.session_state.fb_pairs), width="stretch", hide_index=True)
-            st.download_button("⬇️ CSV indir", _csv(st.session_state.fb_pairs),
+            st.download_button("CSV indir", _csv(st.session_state.fb_pairs),
                                "skor_geri_bildirim.csv", "text/csv", key="dl_skor")
         else:
             st.caption("Henüz kayıt yok.")
@@ -345,7 +467,7 @@ with sekme2:
         st.write("Herhangi bir görev için kavram eşleştirmesini görüntüle; doğruluğunu değerlendir, "
                  "**beklenen eşleştirmeyi** yaz ya da **silinecek kavramı** belirt.")
         secim = st.selectbox("Görev tanımı", list(etiketler.keys()), key="kv_fb_secim")
-        if st.button("🔎 Kavram eşleştirmesini göster"):
+        if st.button("Kavram eşleştirmesini göster"):
             jid = etiketler[secim]
             alt = df[df["PositionId"].astype(str) == jid]
             R = analiz_et(alt, st.session_state.concepts, st.session_state.kurallar)
@@ -361,7 +483,7 @@ with sekme2:
                 beklenen = st.text_area("Beklenen eşleştirme (opsiyonel)")
                 silinecek = st.text_input("Silinmesini istediğin kavram(lar) (opsiyonel)")
                 aciklama = st.text_area("Açıklama / not (opsiyonel)")
-                if st.form_submit_button("💾 Kavram eşleştirme geri bildirimini kaydet", type="primary"):
+                if st.form_submit_button("Kavram eşleştirme geri bildirimini kaydet", type="primary"):
                     st.session_state.fb_mapping.append(dict(
                         zaman=_now(), kullanici=kullanici, gorev=fb["jid"], ad=fb["ad"],
                         mevcut_eslestirme=json.dumps(fb["tablo"], ensure_ascii=False),
@@ -372,16 +494,87 @@ with sekme2:
         st.markdown("##### Toplanan kavram eşleştirme geri bildirimleri (oturum)")
         if st.session_state.fb_mapping:
             st.dataframe(pd.DataFrame(st.session_state.fb_mapping), width="stretch", hide_index=True)
-            st.download_button("⬇️ CSV indir", _csv(st.session_state.fb_mapping),
+            st.download_button("CSV indir", _csv(st.session_state.fb_mapping),
                                "kavram_eslestirme_geri_bildirim.csv", "text/csv", key="dl_ke")
         else:
             st.caption("Henüz kayıt yok.")
 
 # ============================================================================
-# EKRAN 3 — KAVRAM EŞLEŞTİRME (JSON düzenleme, oturum içi + indir)
+# EKRAN 3 — ROL–KAVRAM GÖRÜNÜMÜ
 # ============================================================================
 with sekme3:
-    st.subheader("Kavram eşleştirme — ontoloji (JSON)")
+    st.subheader("Rol → Kavram görünümü")
+    st.write("Hangi rolün (görev tanımı) hangi kavramlarla eşleştiğini incele. "
+             "Rol seçmezsen tüm görev tanımları hesaplanır.")
+
+    secili_rk = st.multiselect("Roller (boş = tümü)", list(etiketler.keys()), key="rk_sec")
+    if st.button("Eşleşmeleri göster", type="primary", key="rk_go"):
+        rk_ids = ([etiketler[g] for g in secili_rk] if secili_rk
+                  else [str(r["PositionId"]) for _, r in df.iterrows()])
+        alt = df[df["PositionId"].astype(str).isin(rk_ids)]
+        st.session_state.rk = analiz_et(alt, st.session_state.concepts, st.session_state.kurallar)
+        st.session_state.pop("ai_rk", None)
+
+    R = st.session_state.rk
+    if R:
+        # --- Kavram ara: bir kavram hangi rol ve hangi sorumluluk cümlesinden çıkarıldı? ---
+        st.markdown("##### Kavram ara")
+        kullanilan = [c for c in R["concepts"] if any(c in R["WEIGHTS"][j] for j in R["JOBS"])]
+        secenek = {R["concepts"][c]: c for c in kullanilan}
+        aranan = st.selectbox("Kavram seç — hangi rol/cümleden çıkarıldığını gör",
+                              ["—"] + sorted(secenek), key="rk_kavram_ara")
+        if aranan != "—":
+            kod = secenek[aranan]
+            satir = [{"Rol": f"{jid} · {R['JOBS'][jid][0]}", "Sorumluluk cümlesi": sent}
+                     for jid in R["JOBS"] for sent, codes in R["cumle_detay"][jid] if kod in codes]
+            if satir:
+                st.caption(f"**{aranan}** — {len(satir)} sorumluluk cümlesinden çıkarıldı:")
+                st.dataframe(pd.DataFrame(satir), width="stretch", hide_index=True)
+            else:
+                st.info("Bu kavram seçili rollerde bulunamadı.")
+
+        st.markdown("##### Rol × Kavram matrisi (ağırlık = cümle sayısı)")
+        st.dataframe(_mavi_matris_stil(R["kavram_matrisi"]), width="stretch")
+
+        st.markdown("##### Rol → kavramlar (hangi cümleden çıktığıyla)")
+        for jid, (ad, _r) in R["JOBS"].items():
+            with st.expander(f"{jid} · {ad}", expanded=False):
+                kavr = sorted(((R["concepts"][c], n) for c, n in R["WEIGHTS"][jid].items()),
+                              key=lambda x: -x[1])
+                if kavr:
+                    st.caption("Kavram ağırlıkları: " + ", ".join(f"{k} ({n})" for k, n in kavr))
+                st.dataframe(_eslestirme_tablo(R["cumle_detay"][jid], R["concepts"]),
+                             width="stretch", hide_index=True)
+
+        with st.expander("Kavram → roller (ters görünüm)"):
+            ters = {}
+            for jid in R["JOBS"]:
+                for c in R["WEIGHTS"][jid]:
+                    ters.setdefault(R["concepts"][c], []).append(jid)
+            if ters:
+                st.dataframe(pd.DataFrame(
+                    [{"Kavram": k, "Roller": ", ".join(v), "Rol sayısı": len(v)}
+                     for k, v in sorted(ters.items(), key=lambda x: -len(x[1]))]),
+                    width="stretch", hide_index=True)
+            else:
+                st.caption("Kavram eşleşmesi yok.")
+
+        st.divider()
+        if st.button("Yapay zeka yorumu al", key="btn_ai_rk"):
+            satir = [f"- {ad}: {', '.join(R['concepts'][c] for c in R['WEIGHTS'][jid]) or 'kavram yok'}"
+                     for jid, (ad, _r) in R["JOBS"].items()]
+            with st.spinner("Yapay zeka yorumu üretiliyor..."):
+                ok, metin = _ai_yorum(SISTEM_RK, "ROL → KAVRAMLAR:\n" + "\n".join(satir))
+            st.session_state.ai_rk = {"ok": ok, "metin": metin}
+        _yapay_zeka_kutusu("ai_rk")
+    else:
+        st.info("Rolleri seç (ya da boş bırak) ve **Eşleşmeleri göster**'e bas.")
+
+# ============================================================================
+# EKRAN 4 — KAVRAM ONTOLOJİSİ (JSON düzenleme, oturum içi + indir)
+# ============================================================================
+with sekme4:
+    st.subheader("Kavram ontolojisi (JSON)")
     st.write("Kavram ontolojisini düzenle. İki alana da (kavramlar ve kurallar) satır ekleyebilir, "
              "mevcutları değiştirebilirsin. **JSON'ı Güncelle** oturumda geçerli olur; kalıcı "
              "kaydetmek için JSON'u indirip repodaki dosyayla değiştir.")
@@ -401,7 +594,7 @@ with sekme3:
         rdf_yeni = st.data_editor(rdf, width="stretch", hide_index=True,
                                   num_rows="dynamic", key="rule_editor")
 
-    if st.button("🔄 JSON'ı Güncelle", type="primary"):
+    if st.button("JSON'ı Güncelle", type="primary"):
         yeni_concepts = {str(r["Kod"]).strip(): str(r["Kavram"]).strip()
                          for _, r in kdf_yeni.iterrows()
                          if str(r.get("Kod", "")).strip() and str(r.get("Kavram", "")).strip()}
@@ -428,7 +621,7 @@ with sekme3:
                          "KAVRAM_KURALLARI": st.session_state.kurallar}, ensure_ascii=False, indent=2)
     with st.expander("Güncel JSON'u görüntüle / indir"):
         st.code(icerik, language="json")
-    st.download_button("⬇️ kavram_ontolojisi_llm.json indir", icerik.encode("utf-8"),
+    st.download_button("kavram_ontolojisi_llm.json indir", icerik.encode("utf-8"),
                        "kavram_ontolojisi_llm.json", "application/json", key="dl_json")
 
     st.divider()
@@ -440,7 +633,7 @@ with sekme3:
         ad = c3.text_input("Kavram adı")
         anahtar = st.text_input("Anahtar kelime(ler) — virgülle")
         aciklama = st.text_area("Açıklama / gerekçe")
-        if st.form_submit_button("📮 Öneriyi gönder"):
+        if st.form_submit_button("Öneriyi gönder"):
             st.session_state.fb_concept.append(dict(
                 zaman=_now(), tur=tur, kod=kod, ad=ad, anahtar_kelime=anahtar, aciklama=aciklama))
             st.success("Öneri kaydedildi (oturum belleği).")
@@ -448,5 +641,5 @@ with sekme3:
     if st.session_state.fb_concept:
         with st.expander("Toplanan kavram önerileri (oturum)"):
             st.dataframe(pd.DataFrame(st.session_state.fb_concept), width="stretch", hide_index=True)
-            st.download_button("⬇️ CSV indir", _csv(st.session_state.fb_concept),
+            st.download_button("CSV indir", _csv(st.session_state.fb_concept),
                                "kavram_onerileri.csv", "text/csv", key="dl_oneri")
