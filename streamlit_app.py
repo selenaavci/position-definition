@@ -225,7 +225,7 @@ if "concepts" not in st.session_state:
     st.session_state.kurallar = {k: list(v) for k, v in KURALLAR_VARSAYILAN.items()}
 st.session_state.setdefault("analiz", None)
 st.session_state.setdefault("kavram_fb", None)
-st.session_state.setdefault("rk", None)          # rol-kavram görünümü sonucu
+st.session_state.setdefault("rk_all", None)      # rol–kavram: tüm roller üzerinde eşleştirme (önbellek)
 st.session_state.setdefault("fb_pairs", [])     # çift geri bildirimleri
 st.session_state.setdefault("fb_mapping", [])    # kavram eşleştirme geri bildirimleri
 st.session_state.setdefault("fb_concept", [])    # kavram önerileri
@@ -503,72 +503,25 @@ with sekme2:
 # EKRAN 3 — ROL–KAVRAM GÖRÜNÜMÜ
 # ============================================================================
 with sekme3:
-    st.subheader("Rol → Kavram görünümü")
-    st.write("Hangi rolün (görev tanımı) hangi kavramlarla eşleştiğini incele. "
-             "Rol seçmezsen tüm görev tanımları hesaplanır.")
+    st.subheader("Rol – Kavram")
+    st.write("Bir kavram seç; o kavramla ilişkili roller ve ilgili sorumluluk cümleleri listelenir.")
 
-    secili_rk = st.multiselect("Roller (boş = tümü)", list(etiketler.keys()), key="rk_sec")
-    if st.button("Eşleşmeleri göster", type="primary", key="rk_go"):
-        rk_ids = ([etiketler[g] for g in secili_rk] if secili_rk
-                  else [str(r["PositionId"]) for _, r in df.iterrows()])
-        alt = df[df["PositionId"].astype(str).isin(rk_ids)]
-        st.session_state.rk = analiz_et(alt, st.session_state.concepts, st.session_state.kurallar)
-        st.session_state.pop("ai_rk", None)
-
-    R = st.session_state.rk
-    if R:
-        # --- Kavram ara: bir kavram hangi rol ve hangi sorumluluk cümlesinden çıkarıldı? ---
-        st.markdown("##### Kavram ara")
-        kullanilan = [c for c in R["concepts"] if any(c in R["WEIGHTS"][j] for j in R["JOBS"])]
-        secenek = {R["concepts"][c]: c for c in kullanilan}
-        aranan = st.selectbox("Kavram seç — hangi rol/cümleden çıkarıldığını gör",
-                              ["—"] + sorted(secenek), key="rk_kavram_ara")
-        if aranan != "—":
-            kod = secenek[aranan]
-            satir = [{"Rol": f"{jid} · {R['JOBS'][jid][0]}", "Sorumluluk cümlesi": sent}
-                     for jid in R["JOBS"] for sent, codes in R["cumle_detay"][jid] if kod in codes]
-            if satir:
-                st.caption(f"**{aranan}** — {len(satir)} sorumluluk cümlesinden çıkarıldı:")
-                st.dataframe(pd.DataFrame(satir), width="stretch", hide_index=True)
-            else:
-                st.info("Bu kavram seçili rollerde bulunamadı.")
-
-        st.markdown("##### Rol × Kavram matrisi (ağırlık = cümle sayısı)")
-        st.dataframe(_mavi_matris_stil(R["kavram_matrisi"]), width="stretch")
-
-        st.markdown("##### Rol → kavramlar (hangi cümleden çıktığıyla)")
-        for jid, (ad, _r) in R["JOBS"].items():
-            with st.expander(f"{jid} · {ad}", expanded=False):
-                kavr = sorted(((R["concepts"][c], n) for c, n in R["WEIGHTS"][jid].items()),
-                              key=lambda x: -x[1])
-                if kavr:
-                    st.caption("Kavram ağırlıkları: " + ", ".join(f"{k} ({n})" for k, n in kavr))
-                st.dataframe(_eslestirme_tablo(R["cumle_detay"][jid], R["concepts"]),
-                             width="stretch", hide_index=True)
-
-        with st.expander("Kavram → roller (ters görünüm)"):
-            ters = {}
-            for jid in R["JOBS"]:
-                for c in R["WEIGHTS"][jid]:
-                    ters.setdefault(R["concepts"][c], []).append(jid)
-            if ters:
-                st.dataframe(pd.DataFrame(
-                    [{"Kavram": k, "Roller": ", ".join(v), "Rol sayısı": len(v)}
-                     for k, v in sorted(ters.items(), key=lambda x: -len(x[1]))]),
-                    width="stretch", hide_index=True)
-            else:
-                st.caption("Kavram eşleşmesi yok.")
-
-        st.divider()
-        if st.button("Yapay zeka yorumu al", key="btn_ai_rk"):
-            satir = [f"- {ad}: {', '.join(R['concepts'][c] for c in R['WEIGHTS'][jid]) or 'kavram yok'}"
-                     for jid, (ad, _r) in R["JOBS"].items()]
-            with st.spinner("Yapay zeka yorumu üretiliyor..."):
-                ok, metin = _ai_yorum(SISTEM_RK, "ROL → KAVRAMLAR:\n" + "\n".join(satir))
-            st.session_state.ai_rk = {"ok": ok, "metin": metin}
-        _yapay_zeka_kutusu("ai_rk")
-    else:
-        st.info("Rolleri seç (ya da boş bırak) ve **Eşleşmeleri göster**'e bas.")
+    concepts = st.session_state.concepts
+    aranan = st.selectbox("Kavram", ["—"] + sorted(concepts.values()), key="rk_kavram_sec")
+    if aranan != "—":
+        # kavram eşleştirmesini tüm roller üzerinde hesapla (oturumda önbelleğe al)
+        if st.session_state.get("rk_all") is None:
+            st.session_state.rk_all = analiz_et(df, concepts, st.session_state.kurallar)
+        R = st.session_state.rk_all
+        kod = next((c for c in R["concepts"] if R["concepts"][c] == aranan), None)
+        satir = [{"Rol": f"{jid} · {R['JOBS'][jid][0]}", "İlgili sorumluluk cümlesi": sent}
+                 for jid in R["JOBS"] for sent, codes in R["cumle_detay"][jid]
+                 if kod and kod in codes]
+        if satir:
+            st.caption(f"**{aranan}** — {len(satir)} sorumluluk cümlesiyle ilişkili:")
+            st.dataframe(pd.DataFrame(satir), width="stretch", hide_index=True)
+        else:
+            st.info("Bu kavramla ilişkili sorumluluk cümlesi bulunamadı.")
 
 # ============================================================================
 # EKRAN 4 — KAVRAM ONTOLOJİSİ (JSON düzenleme, oturum içi + indir)
@@ -611,6 +564,7 @@ with sekme4:
             eklenen = set(yeni_concepts) - set(concepts)
             st.session_state.concepts = yeni_concepts
             st.session_state.kurallar = yeni_kurallar
+            st.session_state.rk_all = None   # ontoloji değişti -> rol–kavram önbelleğini sıfırla
             for kod in eklenen:
                 st.session_state.fb_concept.append(dict(
                     zaman=_now(), tur="yeni_kavram", kod=kod, ad=yeni_concepts[kod]))
