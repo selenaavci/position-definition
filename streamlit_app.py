@@ -110,6 +110,15 @@ def mock_df() -> pd.DataFrame:
         dict(PositionId=pid, Summary=ad, Responsibilities=resp) for pid, ad, resp in veri])
 
 # ============================================================================
+# PDF METİN ÇIKARMA (yüklenen görev tanımları)
+# ============================================================================
+def _pdf_metin(dosya) -> str:
+    """Yüklenen PDF'ten tüm metni çıkarır (pypdf, saf Python)."""
+    from pypdf import PdfReader
+    reader = PdfReader(dosya)
+    return "\n".join((p.extract_text() or "") for p in reader.pages).strip()
+
+# ============================================================================
 # METİN İŞLEME + KURAL TABANLI ETİKETLEME (LLM YOK)
 # ============================================================================
 _TR = str.maketrans("IİĞÜŞÖÇ", "ıiğüşöç")
@@ -342,19 +351,46 @@ etiketler = {f"{r['PositionId']} · {kisa_ad(r)}": str(r["PositionId"]) for _, r
 # ============================================================================
 with sekme1:
     st.subheader("Görev tanımı karşılaştırması")
-    st.write("İstediğin kadar görev tanımı seç. Önce her görev için **kavram eşleştirmeleri**, "
-             "sonra aralarındaki **benzerlik matrisi** gösterilir.")
-    secili_gorunen = st.multiselect("Karşılaştırılacak görev tanımları",
-                                    list(etiketler.keys()), help="En az 2 görev seç.")
+    kaynak = st.radio("Karşılaştırma kaynağı", ["Örnek pozisyonlar", "PDF yükle"],
+                      horizontal=True, key="kar_kaynak")
     esik = st.slider("Benzerlik eşiği (%)", 5, 100, int(ESIK_VARSAYILAN * 100), 5) / 100.0
 
-    if st.button("Karşılaştır", type="primary", disabled=len(secili_gorunen) < 2):
-        secili_ids = [etiketler[g] for g in secili_gorunen]
-        alt = df[df["PositionId"].astype(str).isin(secili_ids)]
-        st.session_state.analiz = analiz_et(alt, st.session_state.concepts,
-                                            st.session_state.kurallar, esik=esik)
-        st.session_state.pop("ai_kar", None)
-        st.success("Analiz tamamlandı.")
+    if kaynak == "Örnek pozisyonlar":
+        st.write("Örnek pozisyonlardan istediğin kadar görev tanımı seç. Önce her görev için "
+                 "**kavram eşleştirmeleri**, sonra **benzerlik matrisi** gösterilir.")
+        secili_gorunen = st.multiselect("Karşılaştırılacak görev tanımları",
+                                        list(etiketler.keys()), help="En az 2 görev seç.")
+        if st.button("Karşılaştır", type="primary", disabled=len(secili_gorunen) < 2):
+            secili_ids = [etiketler[g] for g in secili_gorunen]
+            alt = df[df["PositionId"].astype(str).isin(secili_ids)]
+            st.session_state.analiz = analiz_et(alt, st.session_state.concepts,
+                                                st.session_state.kurallar, esik=esik)
+            st.session_state.pop("ai_kar", None)
+            st.success("Analiz tamamlandı.")
+    else:
+        st.write("**İki veya daha fazla PDF** yükle (her PDF bir görev tanımı; `Responsibilities` "
+                 "metni). Karşılaştırma **LLM'siz, kural tabanlı** kavram etiketlemesiyle yapılır.")
+        yuklenen = st.file_uploader("PDF görev tanımları (2+)", type=["pdf"],
+                                    accept_multiple_files=True)
+        if st.button("PDF'leri karşılaştır", type="primary",
+                     disabled=(not yuklenen or len(yuklenen) < 2)):
+            try:
+                kayitlar = []
+                for f in yuklenen:
+                    ad = f.name.rsplit(".", 1)[0]
+                    kayitlar.append(dict(PositionId=ad, Summary=ad, Responsibilities=_pdf_metin(f)))
+                pdf_df = pd.DataFrame(kayitlar)
+                bos = [r["PositionId"] for r in kayitlar
+                       if len(str(r["Responsibilities"]).strip()) < 20]
+                if bos:
+                    st.warning("Metin çıkarılamayan/çok kısa PDF(ler): " + ", ".join(bos) +
+                               " — taranmış (görüntü) PDF olabilir.")
+                st.session_state.analiz = analiz_et(pdf_df, st.session_state.concepts,
+                                                    st.session_state.kurallar, esik=esik)
+                st.session_state.pop("ai_kar", None)
+                st.success(f"{len(pdf_df)} PDF karşılaştırıldı.")
+            except Exception as e:
+                st.error(f"PDF okunamadı: {type(e).__name__}: {e}")
 
     A = st.session_state.analiz
     if A:
