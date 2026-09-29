@@ -167,23 +167,28 @@ def kavram_etiketle(cumle: str, kurallar: dict) -> list[str]:
             if any(tr_kucuk(a) in t for a in anahtarlar)]
 
 # --- Aynı pozisyonun kıdem/seviye versiyonları -------------------------------
-KIDEM_ISARETLERI = [
-    "kidemli", "kıdemli", "basuzman", "başuzman", "bas", "baş", "yardimcisi", "yardımcısı",
-    "yardimci", "yardımcı", "uzmani", "uzmanı", "uzman", "yonetmeni", "yönetmeni",
-    "yonetmen", "yönetmen", "muduru", "müdürü", "mudur", "müdür", "yoneticisi", "yöneticisi",
-    "yonetici", "yönetici", "direktoru", "direktörü", "direktor", "direktör", "yetkilisi",
-    "yetkili", "memuru", "memur", "sefi", "şefi", "sef", "şef", "koordinatoru", "koordinatörü",
-    "koordinator", "koordinatör", "asistani", "asistanı", "asistan", "stajyer",
-    "genel", "grup", "bolge", "bölge", "seviye", "kademe", "junior", "senior", "lead", "jr", "sr",
-    "i", "ii", "iii", "iv", "v", "1", "2", "3", "4", "5",
+# Varsayılan: FARKLI pozisyon. Yalnızca gerçek bir kıdem terimi (kıdemli, yardımcısı,
+# baş, junior/senior ...) VARSA ve bu terimler çıkarılınca taban ad AYNI kalırsa
+# (ör. "Uzman" ↔ "Kıdemli Uzman", "Uzman" ↔ "Uzman Yardımcısı") aynı pozisyon sayılır.
+KIDEM_TERIMLERI = [
+    "kıdemli", "kidemli", "yardımcısı", "yardimcisi", "yardımcı", "yardimci",
+    "başuzman", "basuzman", "baş", "bas", "junior", "senior", "jr", "sr", "stajyer",
 ]
-_KIDEM_SET = set(tr_kucuk(x) for x in KIDEM_ISARETLERI)
+_KIDEM_SET = set(tr_kucuk(x) for x in KIDEM_TERIMLERI)
+
+def _ad_kelimeler(ad: str) -> list:
+    return re.sub(r"[^0-9a-zcgiosuçğıöşü ]", " ", tr_kucuk(ad)).split()
+
+def _kidem_var(ad: str) -> bool:
+    return any(w in _KIDEM_SET for w in _ad_kelimeler(ad))
 
 def _kidem_taban(ad: str) -> str:
-    t = re.sub(r"[^0-9a-zcgiosuçğıöşü ]", " ", tr_kucuk(ad))
-    return " ".join(w for w in t.split() if w not in _KIDEM_SET).strip()
+    return " ".join(w for w in _ad_kelimeler(ad) if w not in _KIDEM_SET).strip()
 
 def ayni_kidem_ailesi(adA: str, adB: str) -> bool:
+    # en az birinde kıdem terimi olacak + kıdem terimleri çıkınca taban ad aynı (ve boş değil)
+    if not (_kidem_var(adA) or _kidem_var(adB)):
+        return False
     a, b = _kidem_taban(adA), _kidem_taban(adB)
     return bool(a) and a == b
 
@@ -471,9 +476,9 @@ with sekme1:
         else:
             st.info("Farklı pozisyonlar arasında eşiği aşan çift yok.")
 
-        st.markdown("#### Aynı pozisyon — kıdem/seviye versiyonları (beklenen)")
+        st.markdown("#### Aynı pozisyon — kıdem/seviye versiyonları")
         if kidem:
-            st.caption("Aynı işin farklı kıdem kademeleri; yüksek benzerlik beklenir, çakışma değildir.")
+            st.caption("Aynı işin farklı kıdem kademeleri (kıdemli / yardımcısı vb.).")
             st.dataframe(_cift_tablo(kidem), width="stretch", hide_index=True)
         else:
             st.caption("Aynı pozisyonun kıdem/seviye versiyonu tespit edilmedi.")
