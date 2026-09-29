@@ -110,13 +110,32 @@ def mock_df() -> pd.DataFrame:
         dict(PositionId=pid, Summary=ad, Responsibilities=resp) for pid, ad, resp in veri])
 
 # ============================================================================
-# PDF METİN ÇIKARMA (yüklenen görev tanımları)
+# DOSYA METİN ÇIKARMA (yüklenen görev tanımları: PDF / DOCX)
 # ============================================================================
 def _pdf_metin(dosya) -> str:
     """Yüklenen PDF'ten tüm metni çıkarır (pypdf, saf Python)."""
     from pypdf import PdfReader
     reader = PdfReader(dosya)
     return "\n".join((p.extract_text() or "") for p in reader.pages).strip()
+
+def _docx_metin(dosya) -> str:
+    """Yüklenen .docx'ten paragraf + tablo metnini çıkarır (python-docx)."""
+    from docx import Document
+    d = Document(dosya)
+    parcalar = [p.text for p in d.paragraphs if p.text.strip()]
+    for t in d.tables:
+        for row in t.rows:
+            for cell in row.cells:
+                if cell.text.strip():
+                    parcalar.append(cell.text)
+    return "\n".join(parcalar).strip()
+
+def _dosya_metin(dosya) -> str:
+    """Uzantıya göre PDF ya da DOCX metni çıkarır."""
+    ad = (dosya.name or "").lower()
+    if ad.endswith(".docx"):
+        return _docx_metin(dosya)
+    return _pdf_metin(dosya)
 
 # ============================================================================
 # METİN İŞLEME + KURAL TABANLI ETİKETLEME (LLM YOK)
@@ -351,9 +370,20 @@ etiketler = {f"{r['PositionId']} · {kisa_ad(r)}": str(r["PositionId"]) for _, r
 # ============================================================================
 with sekme1:
     st.subheader("Görev tanımı karşılaştırması")
-    kaynak = st.radio("Karşılaştırma kaynağı", ["Örnek pozisyonlar", "PDF yükle"],
+    kaynak = st.radio("Karşılaştırma kaynağı",
+                      ["Örnek pozisyonlar", "Metin yapıştır", "Dosya yükle (PDF/DOCX)"],
                       horizontal=True, key="kar_kaynak")
     esik = st.slider("Benzerlik eşiği (%)", 5, 100, int(ESIK_VARSAYILAN * 100), 5) / 100.0
+
+    def _karsilastir(kayitlar, birim):
+        gecerli = [r for r in kayitlar if len(str(r["Responsibilities"]).strip()) >= 20]
+        if len(gecerli) < 2:
+            st.warning("En az 2 görev tanımı (yeterli metinle) gerekli.")
+            return
+        st.session_state.analiz = analiz_et(pd.DataFrame(gecerli), st.session_state.concepts,
+                                            st.session_state.kurallar, esik=esik)
+        st.session_state.pop("ai_kar", None)
+        st.success(f"{len(gecerli)} {birim} karşılaştırıldı.")
 
     if kaynak == "Örnek pozisyonlar":
         st.write("Örnek pozisyonlardan istediğin kadar görev tanımı seç. Önce her görev için "
@@ -367,30 +397,51 @@ with sekme1:
                                                 st.session_state.kurallar, esik=esik)
             st.session_state.pop("ai_kar", None)
             st.success("Analiz tamamlandı.")
-    else:
-        st.write("**İki veya daha fazla PDF** yükle (her PDF bir görev tanımı; `Responsibilities` "
-                 "metni). Karşılaştırma **LLM'siz, kural tabanlı** kavram etiketlemesiyle yapılır.")
-        yuklenen = st.file_uploader("PDF görev tanımları (2+)", type=["pdf"],
-                                    accept_multiple_files=True)
-        if st.button("PDF'leri karşılaştır", type="primary",
+
+    elif kaynak == "Metin yapıştır":
+        st.write("Her görev için **ad**, **özet** ve **sorumluluklar** metnini gir. Analiz özet + "
+                 "sorumluluklar üzerinde, **LLM'siz kural tabanlı** kavram etiketlemesiyle yapılır.")
+        adet = int(st.number_input("Kaç görev tanımı?", min_value=2, max_value=8, value=2, step=1))
+        girdiler = []
+        for i in range(adet):
+            st.markdown(f"**Görev {i+1}**")
+            ad = st.text_input(f"Ad {i+1}", value=f"Görev {i+1}", key=f"metin_ad_{i}")
+            c1, c2 = st.columns(2)
+            ozet = c1.text_area(f"Özet {i+1}", key=f"metin_ozet_{i}", height=110,
+                                placeholder="Görevin kısa özeti...")
+            sorumluluklar = c2.text_area(f"Sorumluluklar {i+1}", key=f"metin_sorum_{i}", height=110,
+                                         placeholder="Sorumlulukları madde madde ya da paragraf olarak...")
+            girdiler.append((ad, ozet, sorumluluklar))
+        if st.button("Metinleri karşılaştır", type="primary"):
+            kayitlar = []
+            for i, (ad, ozet, sorumluluklar) in enumerate(girdiler):
+                metin = ((ozet or "") + "\n" + (sorumluluklar or "")).strip()
+                if metin:
+                    kayitlar.append(dict(PositionId=(ad or f"Görev {i+1}"),
+                                         Summary=(ad or f"Görev {i+1}"), Responsibilities=metin))
+            _karsilastir(kayitlar, "metin")
+
+    else:  # Dosya yükle (PDF/DOCX)
+        st.write("**İki veya daha fazla dosya** yükle (her dosya bir görev tanımı). "
+                 "**PDF veya DOCX** desteklenir; karşılaştırma **LLM'siz, kural tabanlı** "
+                 "kavram etiketlemesiyle yapılır.")
+        yuklenen = st.file_uploader("Görev tanımı dosyaları (PDF/DOCX, 2+)",
+                                    type=["pdf", "docx"], accept_multiple_files=True)
+        if st.button("Dosyaları karşılaştır", type="primary",
                      disabled=(not yuklenen or len(yuklenen) < 2)):
             try:
                 kayitlar = []
                 for f in yuklenen:
                     ad = f.name.rsplit(".", 1)[0]
-                    kayitlar.append(dict(PositionId=ad, Summary=ad, Responsibilities=_pdf_metin(f)))
-                pdf_df = pd.DataFrame(kayitlar)
+                    kayitlar.append(dict(PositionId=ad, Summary=ad, Responsibilities=_dosya_metin(f)))
                 bos = [r["PositionId"] for r in kayitlar
                        if len(str(r["Responsibilities"]).strip()) < 20]
                 if bos:
-                    st.warning("Metin çıkarılamayan/çok kısa PDF(ler): " + ", ".join(bos) +
+                    st.warning("Metin çıkarılamayan/çok kısa dosya(lar): " + ", ".join(bos) +
                                " — taranmış (görüntü) PDF olabilir.")
-                st.session_state.analiz = analiz_et(pdf_df, st.session_state.concepts,
-                                                    st.session_state.kurallar, esik=esik)
-                st.session_state.pop("ai_kar", None)
-                st.success(f"{len(pdf_df)} PDF karşılaştırıldı.")
+                _karsilastir(kayitlar, "dosya")
             except Exception as e:
-                st.error(f"PDF okunamadı: {type(e).__name__}: {e}")
+                st.error(f"Dosya okunamadı: {type(e).__name__}: {e}")
 
     A = st.session_state.analiz
     if A:
